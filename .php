@@ -112,9 +112,6 @@ class Functions {
             print Display::Isi("Enter Xevil API Key");
             print h . "(Get from: t.me/Xevil_check_bot?start=1204538927)\n";
             $value = readline();
-        } elseif ($name == "withdraw_wallet") {
-            print Display::Isi("Enter Wallet for Withdraw (Freekassa)");
-            $value = readline();
         }
         
         if (!empty($value)) {
@@ -335,7 +332,6 @@ class Bot {
     private $cookie;
     private $uagent;
     private $captcha;
-    private $withdraw_wallet;
     
     function __construct() {
         Display::Ban(TITLE, VERSION);
@@ -346,7 +342,6 @@ class Bot {
             
         $this->cookie = Functions::setConfig("cookie");
         $this->uagent = Functions::setConfig("user_agent");
-        $this->withdraw_wallet = Functions::setConfig("withdraw_wallet");
         Functions::view();
         
         $this->captcha = new Captcha();
@@ -366,22 +361,85 @@ class Bot {
 
         $status = 0;
         while(true) {
+            // Check balance and withdraw if >= 15 RUB
+            $this->checkBalanceAndWithdraw();
+            
             if($this->Claim()) {
                 Functions::removeConfig("cookie");
                 goto cookie;
             }
             $status = $this->Extensions($status);
-            
-            // Verificar si el balance alcanza 15 rublos para retirar
-            $r = $this->Dashboard();
-            $balance = floatval($r['Balance']);
-            if ($balance >= 15.0) {
-                Display::waktu("Balance reached 15 rubles, attempting withdrawal...");
-                $this->Withdraw();
-            }
-            
             Functions::Tmr(30);
         }
+    }
+    
+    private function checkBalanceAndWithdraw() {
+        $r = $this->Dashboard();
+        if(!$r['Username']) {
+            return false;
+        }
+        
+        $balance = floatval($r['Balance']);
+        Display::Cetak("Current Balance", $r['Balance'] . " RUB");
+        
+        // Check if balance is 15 RUB or more for withdraw
+        if ($balance >= 15.0) {
+            Display::waktu("Balance reached 15 RUB, attempting auto withdraw...");
+            $result = $this->processWithdraw(15.0);
+            
+            if ($result) {
+                Display::sukses("Withdraw completed! 15 RUB sent to Payeer");
+                
+                // Update balance display
+                $newBalance = $this->Dashboard();
+                if ($newBalance) {
+                    Display::Cetak("New Balance", $newBalance['Balance'] . " RUB");
+                }
+                Display::Line();
+                return true;
+            } else {
+                Display::Error("Withdraw failed, will retry later");
+                Display::Line();
+                return false;
+            }
+        } else {
+            $needed = 15.0 - $balance;
+            Display::info("Need " . number_format($needed, 2) . " more RUB for auto withdraw");
+            Display::Line();
+            return false;
+        }
+    }
+    
+    private function processWithdraw($amount) {
+        // Load withdraw page to get tokens
+        $withdrawPage = Requests::Curl(HOST . 'withdraw/', $this->headers())[1];
+        
+        // Prepare withdraw data for Payeer (type 2)
+        $data = "nwithdraw_sum=" . $amount . "&withdraw_type_h=2&send_widthdraw=submit";
+        
+        $headers = $this->headers();
+        $headers[] = "Content-Type: application/x-www-form-urlencoded";
+        $headers[] = "Referer: " . HOST . "withdraw/";
+        $headers[] = "Origin: " . HOST;
+        
+        $response = Requests::Curl(HOST . 'withdraw/', $headers, 1, $data)[1];
+        
+        // Check if withdraw was successful
+        if (strpos($response, "Вывод успешно выполнен") !== false ||
+            strpos($response, "успешно выполнен") !== false ||
+            strpos($response, "successfully") !== false ||
+            strpos($response, "Заявка принята") !== false) {
+            return true;
+        }
+        
+        // Log specific errors
+        if (strpos($response, "Недостаточно средств") !== false) {
+            Display::Error("Insufficient funds for withdraw");
+        } elseif (strpos($response, "Минимальная сумма") !== false) {
+            Display::Error("Below minimum withdraw amount");
+        }
+        
+        return false;
     }
     
     private function getExt() {
@@ -546,51 +604,6 @@ class Bot {
             }
         }
     }
-    
-    private function Withdraw() {
-        if (empty($this->withdraw_wallet)) {
-            Display::waktu("Wallet not configured for withdrawal");
-            return false;
-        }
-        
-        Display::waktu("Attempting withdrawal to: " . $this->withdraw_wallet);
-        
-        // Primero obtener la página de retiro para extraer el token CSRF
-        $r = Requests::Curl(HOST . 'withdraw/', $this->headers())[1];
-        
-        // Buscar el token CSRF
-        if (preg_match('/name="csrf_token_name" value="([^"]+)"/', $r, $matches)) {
-            $csrf_token = $matches[1];
-        } else {
-            Display::waktu("Could not find CSRF token");
-            return false;
-        }
-        
-        // Preparar datos para el retiro (Freekassa)
-        $data = http_build_query([
-            'csrf_token_name' => $csrf_token,
-            'system' => 'freekassa', // Sistema de pago Freekassa
-            'account' => $this->withdraw_wallet,
-            'amount' => '15' // Retirar 15 rublos
-        ]);
-        
-        // Realizar la solicitud de retiro
-        $response = Requests::Curl(HOST . 'withdraw/', $this->headers(), 1, $data)[1];
-        
-        // Verificar si el retiro fue exitoso
-        if (strpos($response, 'Заявка на вывод успешно отправлена') !== false || 
-            strpos($response, 'Withdrawal request successfully sent') !== false) {
-            Display::sukses("Withdrawal of 15 rubles successful!");
-            return true;
-        } elseif (strpos($response, 'Недостаточно средств') !== false || 
-                 strpos($response, 'Insufficient funds') !== false) {
-            Display::waktu("Insufficient funds for withdrawal");
-            return false;
-        } else {
-            Display::waktu("Withdrawal failed or unknown response");
-            return false;
-        }
-    }
 }
 
 // Crear directorio data si no existe
@@ -602,3 +615,4 @@ if(!file_exists("data")) {
 
 // Iniciar el bot
 new Bot();
+?>
