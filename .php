@@ -379,6 +379,7 @@ class Bot {
         Display::Cetak("Timezone", "America/Bogota (Colombia)");
         Display::Line();
 
+        // INICIAR EL BUCLE PRINCIPAL INMEDIATAMENTE
         $status = 0;
         while(true) {
             $this->cycle++;
@@ -388,7 +389,8 @@ class Bot {
             $this->checkDailyWithdraw();
             
             // Continuar con el flujo normal del bot
-            if($this->Claim()) {
+            $claimResult = $this->Claim();
+            if($claimResult) {
                 Functions::removeConfig("cookie");
                 goto cookie;
             }
@@ -591,7 +593,7 @@ class Bot {
     private function headers($xml = 0) {
         $h[] = "Host: " . parse_url(HOST)['host'];
         $h[] = "cookie: " . $this->cookie;
-        if($xml) {
+  if($xml) {
             $h[] = "X-Requested-With: XMLHttpRequest";
         }
         $h[] = "user-agent: " . $this->uagent;
