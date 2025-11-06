@@ -112,14 +112,8 @@ class Functions {
             print Display::Isi("Enter Xevil API Key");
             print h . "(Get from: t.me/Xevil_check_bot?start=1204538927)\n";
             $value = readline();
-        } elseif ($name == "auto_withdraw") {
-            print Display::Isi("Enable Auto Withdraw to Payeer? (y/n)");
-            $value = strtolower(trim(readline()));
-            $value = ($value == 'y' || $value == 'yes') ? '1' : '0';
-        } elseif ($name == "min_balance") {
-            print Display::Isi("Minimum balance for auto withdraw");
-            $value = floatval(readline());
-            if ($value < 10) $value = 10.0;
+        } elseif ($name == "last_withdraw") {
+            return "0"; // Default: never withdrawn
         }
         
         if (!empty($value)) {
@@ -128,6 +122,19 @@ class Functions {
         }
         
         return "";
+    }
+    
+    public static function setLastWithdraw($timestamp) {
+        $file = "data/last_withdraw.txt";
+        file_put_contents($file, $timestamp);
+    }
+    
+    public static function getLastWithdraw() {
+        $file = "data/last_withdraw.txt";
+        if (file_exists($file)) {
+            return trim(file_get_contents($file));
+        }
+        return "0";
     }
     
     public static function removeConfig($name) {
@@ -340,8 +347,7 @@ class Bot {
     private $cookie;
     private $uagent;
     private $captcha;
-    private $autoWithdraw;
-    private $minBalance;
+    private $lastWithdraw;
     
     function __construct() {
         Display::Ban(TITLE, VERSION);
@@ -352,12 +358,7 @@ class Bot {
             
         $this->cookie = Functions::setConfig("cookie");
         $this->uagent = Functions::setConfig("user_agent");
-        $this->autoWithdraw = Functions::setConfig("auto_withdraw");
-        $this->minBalance = Functions::setConfig("min_balance");
-        
-        if (empty($this->minBalance)) {
-            $this->minBalance = 10.0;
-        }
+        $this->lastWithdraw = Functions::getLastWithdraw();
         
         Functions::view();
         
@@ -374,7 +375,7 @@ class Bot {
         
         Display::Cetak("Username", $r['Username']);
         Display::Cetak("Balance", $r['Balance']);
-        Display::Cetak("Auto Withdraw", $this->autoWithdraw ? "Enabled (Min: " . $this->minBalance . " RUB)" : "Disabled");
+        Display::Cetak("Auto Withdraw", "Enabled (15 RUB daily to Payeer)");
         Display::Line();
 
         $status = 0;
@@ -385,59 +386,92 @@ class Bot {
             }
             $status = $this->Extensions($status);
             
-            // Check and process auto withdraw
-            if ($this->autoWithdraw == '1') {
-                $this->checkAndWithdraw();
-            }
+            // Check and process auto withdraw once per day
+            $this->checkAndWithdraw();
             
             Functions::Tmr(30);
         }
     }
     
     private function checkAndWithdraw() {
+        $currentTime = time();
+        $lastWithdrawTime = intval($this->lastWithdraw);
+        $secondsInDay = 24 * 60 * 60;
+        
+        // Check if 24 hours have passed since last withdraw
+        if (($currentTime - $lastWithdrawTime) < $secondsInDay) {
+            $nextWithdraw = $lastWithdrawTime + $secondsInDay;
+            $remaining = $nextWithdraw - $currentTime;
+            $hours = floor($remaining / 3600);
+            $minutes = floor(($remaining % 3600) / 60);
+            
+            Display::waktu("Next auto withdraw in: " . $hours . "h " . $minutes . "m");
+            return;
+        }
+        
         $r = $this->Dashboard();
         $balance = floatval($r['Balance']);
+        $withdrawAmount = 15.0;
         
-        if ($balance >= $this->minBalance) {
+        if ($balance >= $withdrawAmount) {
             Display::waktu("Balance reached " . $balance . " RUB, processing auto withdraw to Payeer...");
-            $result = $this->processWithdraw($balance);
+            $result = $this->processWithdraw($withdrawAmount);
             
             if ($result) {
-                Display::sukses("Auto withdraw successful: " . $balance . " RUB to Payeer");
+                Display::sukses("Auto withdraw successful: " . $withdrawAmount . " RUB to Payeer");
+                Functions::setLastWithdraw($currentTime);
+                $this->lastWithdraw = $currentTime;
+                
+                // Update balance after withdraw
+                $r = $this->Dashboard();
+                Display::Cetak("New Balance", $r['Balance']);
             } else {
-                Display::Error("Auto withdraw failed");
+                Display::Error("Auto withdraw failed, will retry in next cycle");
             }
             
             Display::Line();
+        } else {
+            Display::waktu("Balance: " . $balance . " RUB (Need " . $withdrawAmount . " RUB for auto withdraw)");
         }
     }
     
     private function processWithdraw($amount) {
+        // First, get the withdraw page to ensure we have valid session
+        $response = Requests::Curl(HOST . "withdraw/", $this->headers());
+        $body = $response[1];
+        
+        // Prepare withdraw data
         $data = "nwithdraw_sum=" . $amount . "&withdraw_type_h=2&send_widthdraw=submit";
         
         $headers = $this->headers();
         $headers[] = "Content-Type: application/x-www-form-urlencoded";
         $headers[] = "Referer: " . HOST . "withdraw/";
         $headers[] = "Origin: " . HOST;
+        $headers[] = "Cache-Control: max-age=0";
+        $headers[] = "Upgrade-Insecure-Requests: 1";
         
+        // Execute withdraw
         $response = Requests::Curl(HOST . "withdraw/", $headers, 1, $data);
         $body = $response[1];
         
         // Check if withdraw was successful
         if (strpos($body, "Заявка на вывод средств успешно создана") !== false || 
             strpos($body, "successfully created") !== false ||
-            strpos($body, "успешно создана") !== false) {
+            strpos($body, "успешно создана") !== false ||
+            strpos($body, "Заявка принята") !== false) {
             return true;
         }
         
-        // Check for errors
-        if (strpos($body, "error") !== false || strpos($body, "ошибк") !== false) {
-            Display::Error("Withdraw error detected");
-            return false;
+        // Check for specific errors
+        if (strpos($body, "Недостаточно средств") !== false) {
+            Display::Error("Insufficient funds for withdraw");
+        } elseif (strpos($body, "Минимальная сумма") !== false) {
+            Display::Error("Below minimum withdraw amount");
+        } elseif (strpos($body, "error") !== false || strpos($body, "ошибк") !== false) {
+            Display::Error("Withdraw error detected in response");
         }
         
-        // If we can't determine success, assume it worked
-        return true;
+        return false;
     }
     
     private function getExt() {
@@ -613,4 +647,3 @@ if(!file_exists("data")) {
 
 // Iniciar el bot
 new Bot();
-?>
