@@ -2,7 +2,7 @@
 error_reporting(0);
 date_default_timezone_set("UTC");
 
-// Constantes y configuració
+// Constantes y configuración
 const
 VERSION = "0.0.1",
 HOST = "https://teaserfast.ru/",
@@ -332,6 +332,7 @@ class Bot {
     private $cookie;
     private $uagent;
     private $captcha;
+    private $cycle;
     
     function __construct() {
         Display::Ban(TITLE, VERSION);
@@ -345,6 +346,7 @@ class Bot {
         Functions::view();
         
         $this->captcha = new Captcha();
+        $this->cycle = 0;
         
         Display::Ban(TITLE, VERSION);
         
@@ -361,7 +363,10 @@ class Bot {
 
         $status = 0;
         while(true) {
-            // Check balance and withdraw if >= 15 RUB
+            $this->cycle++;
+            echo "\n" . k . "=== CYCLE " . $this->cycle . " === " . date('H:i:s') . " ===" . d . "\n";
+            
+            // Check balance and auto withdraw
             $this->checkBalanceAndWithdraw();
             
             if($this->Claim()) {
@@ -374,57 +379,79 @@ class Bot {
     }
     
     private function checkBalanceAndWithdraw() {
-        $r = $this->Dashboard();
-        if(!$r['Username']) {
-            return false;
+        $dashboard = $this->Dashboard();
+        if (!$dashboard) {
+            Display::waktu("ERROR: Cannot get dashboard");
+            return;
         }
         
-        $balance = floatval($r['Balance']);
-        Display::Cetak("Current Balance", $r['Balance'] . " RUB");
+        $balance = floatval($dashboard['Balance']);
+        Display::Cetak("Balance", $dashboard['Balance'] . " RUB");
+        Display::Cetak("Username", $dashboard['Username']);
         
-        // Check if balance is 15 RUB or more for withdraw
+        // Check if we can withdraw (15 RUB minimum)
         if ($balance >= 15.0) {
-            Display::waktu("Balance reached 15 RUB, attempting auto withdraw...");
+            Display::waktu("Attempting auto withdraw of 15 RUB to Payeer...");
             $result = $this->processWithdraw(15.0);
             
             if ($result) {
                 Display::sukses("Withdraw completed! 15 RUB sent to Payeer");
                 
-                // Update balance display
-                $newBalance = $this->Dashboard();
-                if ($newBalance) {
-                    Display::Cetak("New Balance", $newBalance['Balance'] . " RUB");
+                // Update balance after withdraw
+                $newDashboard = $this->Dashboard();
+                if ($newDashboard) {
+                    Display::Cetak("New Balance", $newDashboard['Balance'] . " RUB");
                 }
-                Display::Line();
-                return true;
             } else {
-                Display::Error("Withdraw failed, will retry later");
-                Display::Line();
-                return false;
+                Display::Error("Withdraw failed");
             }
         } else {
-            $needed = 15.0 - $balance;
-            Display::info("Need " . number_format($needed, 2) . " more RUB for auto withdraw");
-            Display::Line();
-            return false;
+            Display::waktu("Balance too low for withdraw (need 15 RUB, have $balance RUB)");
         }
+        
+        Display::Line();
     }
     
     private function processWithdraw($amount) {
-        // Load withdraw page to get tokens
-        $withdrawPage = Requests::Curl(HOST . 'withdraw/', $this->headers())[1];
+        // Primero necesitamos cargar la página de withdraw para obtener el token/csrf
+        $withdrawPage = $this->getWithdrawPage();
+        if (!$withdrawPage) {
+            Display::waktu("ERROR: Cannot load withdraw page");
+            return false;
+        }
         
-        // Prepare withdraw data for Payeer (type 2)
+        // Preparar datos para el withdraw
         $data = "nwithdraw_sum=" . $amount . "&withdraw_type_h=2&send_widthdraw=submit";
         
-        $headers = $this->headers();
-        $headers[] = "Content-Type: application/x-www-form-urlencoded";
-        $headers[] = "Referer: " . HOST . "withdraw/";
-        $headers[] = "Origin: " . HOST;
+        $headers = [
+            "Host: teaserfast.ru",
+            "Cookie: " . $this->cookie,
+            "User-Agent: " . $this->uagent,
+            "Content-Type: application/x-www-form-urlencoded",
+            "Referer: " . HOST . "withdraw/",
+            "Origin: " . HOST,
+            "Cache-Control: max-age=0",
+            "Upgrade-Insecure-Requests: 1"
+        ];
         
-        $response = Requests::Curl(HOST . 'withdraw/', $headers, 1, $data)[1];
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, HOST . "withdraw/");
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+        curl_setopt($ch, CURLOPT_POST, 1);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+        curl_setopt($ch, CURLOPT_HEADER, 1); // Incluir headers en la respuesta
         
-        // Check if withdraw was successful
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        Display::waktu("Withdraw HTTP Code: $httpCode");
+        
+        // Verificar si el withdraw fue exitoso
         if (strpos($response, "Вывод успешно выполнен") !== false ||
             strpos($response, "успешно выполнен") !== false ||
             strpos($response, "successfully") !== false ||
@@ -432,14 +459,37 @@ class Bot {
             return true;
         }
         
-        // Log specific errors
+        // Si hay un error específico, mostrarlo
         if (strpos($response, "Недостаточно средств") !== false) {
-            Display::Error("Insufficient funds for withdraw");
+            Display::waktu("ERROR: Insufficient funds");
         } elseif (strpos($response, "Минимальная сумма") !== false) {
-            Display::Error("Below minimum withdraw amount");
+            Display::waktu("ERROR: Below minimum amount");
+        } elseif (strpos($response, "error") !== false) {
+            Display::waktu("ERROR: General error detected");
         }
         
         return false;
+    }
+    
+    private function getWithdrawPage() {
+        $headers = [
+            "Host: teaserfast.ru",
+            "Cookie: " . $this->cookie,
+            "User-Agent: " . $this->uagent
+        ];
+        
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, HOST . "withdraw/");
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+        
+        $response = curl_exec($ch);
+        curl_close($ch);
+        
+        return $response;
     }
     
     private function getExt() {
