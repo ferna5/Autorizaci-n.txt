@@ -113,7 +113,7 @@ class Functions {
             print h . "(Get from: t.me/Xevil_check_bot?start=1204538927)\n";
             $value = readline();
         } elseif ($name == "last_withdraw") {
-            return "0"; // Default: never withdrawn
+            return "0";
         }
         
         if (!empty($value)) {
@@ -184,6 +184,7 @@ class Requests {
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
         curl_setopt($ch, CURLOPT_HEADER, 1);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
         
         if (!empty($headers)) {
             curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
@@ -248,7 +249,7 @@ class Captcha {
         }
         
         $xwr = [$wr, p, $wr, p];
-        $sym = [' ‚îÄ ',' / ',' ‚îÇ ',' \ '];
+        $sym = [' ─ ',' / ',' │ ',' \ '];
         $a = 0;
         
         for($i = $tmr * 4; $i > 0; $i--) {
@@ -378,16 +379,25 @@ class Bot {
         Display::Cetak("Auto Withdraw", "Enabled (15 RUB daily to Payeer)");
         Display::Line();
 
-        $status = 0;
+        $cycleCount = 0;
         while(true) {
+            $cycleCount++;
+            Display::waktu("Cycle #$cycleCount started");
+            
+            // Check and process auto withdraw first
+            $this->checkAndWithdraw();
+            
+            // Process tasks
             if($this->Claim()) {
                 Functions::removeConfig("cookie");
                 goto cookie;
             }
-            $status = $this->Extensions($status);
             
-            // Check and process auto withdraw once per day
-            $this->checkAndWithdraw();
+            // Process extensions
+            $this->Extensions();
+            
+            Display::waktu("Cycle #$cycleCount completed");
+            Display::Line();
             
             Functions::Tmr(30);
         }
@@ -428,111 +438,96 @@ class Bot {
             } else {
                 Display::Error("Auto withdraw failed, will retry in next cycle");
             }
-            
-            Display::Line();
         } else {
             Display::waktu("Balance: " . $balance . " RUB (Need " . $withdrawAmount . " RUB for auto withdraw)");
         }
     }
     
     private function processWithdraw($amount) {
-        // First, get the withdraw page to ensure we have valid session
-        $response = Requests::Curl(HOST . "withdraw/", $this->headers());
-        $body = $response[1];
-        
-        // Prepare withdraw data
-        $data = "nwithdraw_sum=" . $amount . "&withdraw_type_h=2&send_widthdraw=submit";
-        
-        $headers = $this->headers();
-        $headers[] = "Content-Type: application/x-www-form-urlencoded";
-        $headers[] = "Referer: " . HOST . "withdraw/";
-        $headers[] = "Origin: " . HOST;
-        $headers[] = "Cache-Control: max-age=0";
-        $headers[] = "Upgrade-Insecure-Requests: 1";
-        
-        // Execute withdraw
-        $response = Requests::Curl(HOST . "withdraw/", $headers, 1, $data);
-        $body = $response[1];
-        
-        // Check if withdraw was successful
-        if (strpos($body, "Заявка на вывод средств успешно создана") !== false || 
-            strpos($body, "successfully created") !== false ||
-            strpos($body, "успешно создана") !== false ||
-            strpos($body, "Заявка принята") !== false) {
-            return true;
+        try {
+            // First, get the withdraw page to ensure we have valid session
+            $response = Requests::Curl(HOST . "withdraw/", $this->headers());
+            $body = $response[1];
+            
+            // Prepare withdraw data
+            $data = "nwithdraw_sum=" . $amount . "&withdraw_type_h=2&send_widthdraw=submit";
+            
+            $headers = $this->headers();
+            $headers[] = "Content-Type: application/x-www-form-urlencoded";
+            $headers[] = "Referer: " . HOST . "withdraw/";
+            $headers[] = "Origin: " . HOST;
+            
+            // Execute withdraw
+            $response = Requests::Curl(HOST . "withdraw/", $headers, 1, $data);
+            $body = $response[1];
+            
+            // Check if withdraw was successful
+            if (strpos($body, "Заявка на вывод средств успешно создана") !== false || 
+                strpos($body, "successfully created") !== false ||
+                strpos($body, "успешно создана") !== false ||
+                strpos($body, "Заявка принята") !== false) {
+                return true;
+            }
+            
+            return false;
+        } catch (Exception $e) {
+            Display::Error("Withdraw error: " . $e->getMessage());
+            return false;
         }
-        
-        // Check for specific errors
-        if (strpos($body, "Недостаточно средств") !== false) {
-            Display::Error("Insufficient funds for withdraw");
-        } elseif (strpos($body, "Минимальная сумма") !== false) {
-            Display::Error("Below minimum withdraw amount");
-        } elseif (strpos($body, "error") !== false || strpos($body, "ошибк") !== false) {
-            Display::Error("Withdraw error detected in response");
-        }
-        
-        return false;
     }
     
     private function getExt() {
         $data = "extension=1&version=124&get=submit";
-        return json_decode(Requests::Curl(HOST . "extn/get/", $this->headers(), 1, $data)[1], 1);
+        $response = Requests::Curl(HOST . "extn/get/", $this->headers(), 1, $data);
+        return json_decode($response[1], 1);
     }
     
     private function ExtPopup($hash) {
         $data = "hash=" . $hash . "&popup=submit";
-        return json_decode(Requests::Curl(HOST . "extn/popup/", $this->headers(), 1, $data)[1], 1);
+        $response = Requests::Curl(HOST . "extn/popup/", $this->headers(), 1, $data);
+        return json_decode($response[1], 1);
     }
     
     private function ClaimPopup($hash) {
         $data = "hash=" . $hash;
-        return json_decode(Requests::Curl(HOST . "extn/popup-check/", $this->headers(), 1, $data)[1], 1);
+        $response = Requests::Curl(HOST . "extn/popup-check/", $this->headers(), 1, $data);
+        return json_decode($response[1], 1);
     }
     
     private function ExtTeas($hash) {
         $data = "hash=" . $hash;
-        return json_decode(Requests::Curl(HOST . "extn/status/", $this->headers(), 1, $data)[1], 1);
+        $response = Requests::Curl(HOST . "extn/status/", $this->headers(), 1, $data);
+        return json_decode($response[1], 1);
     }
     
-    private function Extensions($status = 0) {
+    private function Extensions() {
         $r = $this->getExt();
+        
         if(isset($r['popup'])) {
-            $status = "Ext Popup";
             $timer = $r['time_out'] / 1000;
             $hash = explode('/?tzpha=', $r['url'])[1];
-            Display::waktu("Starting Extension Popup");
+            Display::waktu("Starting Extension Popup - Timer: " . $timer . "s");
             $r = $this->ExtPopup($hash);
             Functions::Tmr($timer);
             $hash = $r['hash'];
             $r = $this->ClaimPopup($hash);
         } elseif(isset($r['hash'])) {
-            $status = "Ext Ads";
             $timer = $r['timer'];
-            Display::waktu("Starting Extension Ads");
+            Display::waktu("Starting Extension Ads - Timer: " . $timer . "s");
             Functions::Tmr($timer);
             $hash = $r['hash'];
             $r = $this->ExtTeas($hash);
         } elseif(isset($r['captcha'])) {
             Display::waktu("Captcha detected, please solve manually");
             print Display::Error("Captcha: https://teaserfast.ru/check-captcha\n");
+            return;
         } else {
-            if(!$status) {
-                Display::waktu("Waiting for tasks...");
-            }
-            Functions::Tmr(30);
-            if(!$status) {
-                Display::Line();
-                return 1;
-            }
+            Display::waktu("No extension tasks available");
+            return;
         }
 
-        if($r['success']) {
-            Display::waktu("Completed $status - Earned " . $r['earn']);
-            $r = Requests::Curl(HOST, $this->headers())[1];
-            $bal = explode('</span>', explode('">', explode('<span class="int blue" id="basic_balance" title="', $r)[1])[1])[0];
-            Display::Cetak("Balance", $bal);
-            Display::Line();
-            return;
+        if(isset($r['success']) && $r['success']) {
+            Display::waktu("Extension completed - Earned: " . $r['earn']);
         }
     }
     
@@ -547,51 +542,63 @@ class Bot {
     }											
 
     public function Dashboard() {
-        $r = Requests::Curl(HOST, $this->headers())[1];
-        $user = explode('</div>', explode('<div class="main_user_login">', $r)[1])[0];
-        $bal = explode('</span>', explode('">', explode('<span class="int blue" id="basic_balance" title="', $r)[1])[1])[0];
+        $response = Requests::Curl(HOST, $this->headers());
+        $body = $response[1];
+        $user = explode('</div>', explode('<div class="main_user_login">', $body)[1])[0];
+        $bal = explode('</span>', explode('">', explode('<span class="int blue" id="basic_balance" title="', $body)[1])[1])[0];
         return ["Username" => $user, "Balance" => $bal];
     }
 
     private function Claim() {
-        $r = Requests::Curl(HOST . 'task/', $this->headers())[1];
+        $response = Requests::Curl(HOST . 'task/', $this->headers());
+        $body = $response[1];
         
-        $ids = explode('<div class="it_task task_youtube">', $r);
-        if(isset($ids[1])) {
-            $ids = explode('<a href="/task/', $ids[1]);
-        } else {
+        $ids = explode('<div class="it_task task_youtube">', $body);
+        if(!isset($ids[1])) {
+            Display::waktu("No YouTube tasks available");
             return;
         }
+        
+        $ids = explode('<a href="/task/', $ids[1]);
+        $taskCount = 0;
         
         foreach($ids as $a => $idc) {
             if($a == 0) continue;
             $id = explode('">', $idc)[0];
-            Display::waktu("Starting YouTube task: $id");
+            $taskCount++;
+            Display::waktu("Starting YouTube task #$taskCount: $id");
             
-            $r = Requests::Curl(HOST . 'task/' . $id, $this->headers())[1];
-            if(preg_match('/Задание не найдено или в данный момент недоступно./', $r)) {
+            $response = Requests::Curl(HOST . 'task/' . $id, $this->headers());
+            $body = $response[1];
+            
+            if(preg_match('/Задание не найдено или в данный момент недоступно./', $body)) {
                 Display::waktu("Task $id not available, skipping");
                 continue;
             }
             
-            $code = explode("'", explode("data: {dt: '", $r)[1])[0];
-            $hd = explode("'", explode("hd: '", $r)[1])[0];
-            $rc = explode("'", explode(" rc: '", $r)[1])[0];
-            $tmr = explode(';', explode('var timercount = ', $r)[1])[0];
+            $code = explode("'", explode("data: {dt: '", $body)[1])[0];
+            $hd = explode("'", explode("hd: '", $body)[1])[0];
+            $rc = explode("'", explode(" rc: '", $body)[1])[0];
+            $tmr = explode(';', explode('var timercount = ', $body)[1])[0];
             
             Display::waktu("Waiting $tmr seconds for task");
             Functions::Tmr($tmr);
 
             $data = "dt=" . $code;
-            $r = json_decode(Requests::Curl(HOST . 'captcha-start/', $this->headers(1), 1, $data)[1], 1);
+            $response = Requests::Curl(HOST . 'captcha-start/', $this->headers(1), 1, $data);
+            $r = json_decode($response[1], 1);
+            
             if(!isset($r['success'])) {
                 Display::waktu("Failed to start captcha");
-                break;
+                continue;
             }
             
-            while(true) {
+            $captchaSolved = false;
+            while(!$captchaSolved) {
                 $data = "yd=$id&hd=$hd&rc=$rc";
-                $r = json_decode(Requests::Curl(HOST . 'captcha-youtube/', $this->headers(1), 1, $data)[1], 1);
+                $response = Requests::Curl(HOST . 'captcha-youtube/', $this->headers(1), 1, $data);
+                $r = json_decode($response[1], 1);
+                
                 if(!isset($r['success'])) {
                     Display::waktu("Failed to get captcha data");
                     break;
@@ -609,32 +616,32 @@ class Bot {
                     $x = explode(',', explode('=', $cap)[1])[0];
                     $y = explode('=', $cap)[2];
                     $cap = "$x:$y";
+                    
+                    $data = "crxy=" . $cap . "&dt=" . $code;
+                    $response = Requests::Curl(HOST . 'check-youtube/', $this->headers(1), 1, $data);
+                    $r = json_decode($response[1], 1);
+                    
+                    if(isset($r['captcha'])) {
+                        Display::waktu("Captcha verification failed, retrying...");
+                        sleep(3);
+                    } else {
+                        $desc = $r['desc'];
+                        Display::waktu("Task completed: $desc");
+                        $captchaSolved = true;
+                    }
                 } else {
                     Display::waktu("No captcha data received");
-                    continue;
-                }
-
-                $data = "crxy=" . $cap . "&dt=" . $code;
-                $r = json_decode(Requests::Curl(HOST . 'check-youtube/', $this->headers(1), 1, $data)[1], 1);
-                if(isset($r['captcha'])) {
-                    Display::waktu("Captcha verification failed, retrying...");
-                    sleep(3);
-                } else {
-                    $desc = $r['desc'];
-                    if($desc == "Время на прохождение каптчи истекло.") {
-                        Display::waktu("Captcha time expired");
-                        break;
-                    }
-                    
-                    Display::waktu("Task completed: $desc");
-                    $r = Requests::Curl(HOST, $this->headers())[1];
-                    $bal = explode('</span>', explode('">', explode('<span class="int blue" id="basic_balance" title="', $r)[1])[1])[0];
-                    Display::Cetak("Balance", $bal);
-                    Display::Line();
                     break;
                 }
             }
         }
+        
+        if ($taskCount > 0) {
+            $r = $this->Dashboard();
+            Display::Cetak("Current Balance", $r['Balance']);
+        }
+        
+        return false;
     }
 }
 
