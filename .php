@@ -2,7 +2,7 @@
 error_reporting(0);
 date_default_timezone_set("UTC");
 
-// Constantes y configuración
+// Constantes y configuració
 const
 VERSION = "0.0.1",
 HOST = "https://teaserfast.ru/",
