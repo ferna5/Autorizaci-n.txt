@@ -1,7 +1,6 @@
 <?php
 error_reporting(0);
-// Configurar hora de Colombia
-date_default_timezone_set("America/Bogota");
+date_default_timezone_set("America/Bogota"); // Hora de Colombia
 
 // Constantes y configuración
 const
@@ -159,18 +158,23 @@ class Functions {
         ];
     }
     
-    // Nueva función para guardar y leer última fecha de retiro
-    public static function getLastWithdraw() {
+    // Nueva función para controlar retiros diarios
+    public static function canWithdrawToday() {
         $file = "data/last_withdraw.txt";
-        if (file_exists($file)) {
-            return trim(file_get_contents($file));
+        if (!file_exists($file)) {
+            return true; // Primer retiro
         }
-        return "";
+        
+        $lastWithdraw = file_get_contents($file);
+        $today = date('Y-m-d');
+        
+        return $lastWithdraw !== $today;
     }
     
-    public static function setLastWithdraw($date) {
+    // Nueva función para registrar el retiro del día
+    public static function markWithdrawDone() {
         $file = "data/last_withdraw.txt";
-        file_put_contents($file, $date);
+        file_put_contents($file, date('Y-m-d'));
     }
 }
 
@@ -348,7 +352,6 @@ class Bot {
     private $uagent;
     private $captcha;
     private $cycle;
-    private $lastWithdrawDate;
     
     function __construct() {
         Display::Ban(TITLE, VERSION);
@@ -363,7 +366,6 @@ class Bot {
         
         $this->captcha = new Captcha();
         $this->cycle = 0;
-        $this->lastWithdrawDate = Functions::getLastWithdraw();
         
         Display::Ban(TITLE, VERSION);
         
@@ -381,9 +383,9 @@ class Bot {
         $status = 0;
         while(true) {
             $this->cycle++;
-            echo "\n" . k . "=== CYCLE " . $this->cycle . " === " . date('H:i:s') . " (Colombia) ===" . d . "\n";
+            echo "\n" . k . "=== CYCLE " . $this->cycle . " === " . date('H:i:s') . " (COL) ===" . d . "\n";
             
-            // Check balance and auto withdraw (solo una vez al día)
+            // Check balance and auto withdraw (solo 1 por día)
             $this->checkBalanceAndWithdraw();
             
             if($this->Claim()) {
@@ -403,43 +405,28 @@ class Bot {
         }
         
         $balance = floatval($dashboard['Balance']);
-        $today = date('Y-m-d');
-        
         Display::Cetak("Balance", $dashboard['Balance'] . " RUB");
         Display::Cetak("Username", $dashboard['Username']);
-        Display::Cetak("Last Withdraw", $this->lastWithdrawDate ? $this->lastWithdrawDate : "Never");
         
-        // Verificar si ya se hizo retiro hoy
-        if ($this->lastWithdrawDate === $today) {
-            Display::waktu("Withdraw already done today. Next withdraw: tomorrow");
-            Display::Line();
-            return;
-        }
-        
-        // Check if we can withdraw (15 RUB minimum)
-        if ($balance >= 15.0) {
+        // Check if we can withdraw (15 RUB minimum) y solo 1 vez por día
+        if ($balance >= 15.0 && Functions::canWithdrawToday()) {
             Display::waktu("Attempting auto withdraw of 15 RUB to Payeer...");
             $result = $this->processWithdraw(15.0);
             
             if ($result) {
                 Display::sukses("Withdraw completed! 15 RUB sent to Payeer");
+                Functions::markWithdrawDone(); // Registrar que ya se hizo el retiro hoy
                 
-                // Guardar la fecha del retiro
-                Functions::setLastWithdraw($today);
-                $this->lastWithdrawDate = $today;
-                
-                // Actualizar balance después del retiro
+                // Update balance after withdraw
                 $newDashboard = $this->Dashboard();
                 if ($newDashboard) {
                     Display::Cetak("New Balance", $newDashboard['Balance'] . " RUB");
                 }
-                
-                // Esperar un momento después del retiro exitoso
-                Display::waktu("Withdraw successful, continuing with tasks...");
-                
             } else {
                 Display::Error("Withdraw failed");
             }
+        } elseif ($balance >= 15.0 && !Functions::canWithdrawToday()) {
+            Display::waktu("Withdraw already done today. Next withdraw available tomorrow.");
         } else {
             Display::waktu("Balance too low for withdraw (need 15 RUB, have $balance RUB)");
         }
@@ -478,10 +465,10 @@ class Bot {
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-        curl_setopt($ch, CURLOPT_HEADER, 1);
+        curl_setopt($ch, CURLOPT_HEADER, 1); // Incluir headers en la respuesta
         
         $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $httpCode = curl_get_info($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
         
         Display::waktu("Withdraw HTTP Code: $httpCode");
