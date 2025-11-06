@@ -1,6 +1,6 @@
 <?php
 error_reporting(0);
-date_default_timezone_set("UTC");
+date_default_timezone_set("America/Bogota"); // Hora Colombia
 
 // Constantes y configuración
 const
@@ -156,6 +156,21 @@ class Functions {
             "register" => "t.me/Xevil_check_bot?start=1204538927", 
             "apikey" => $apikey
         ];
+    }
+    
+    public static function getLastWithdrawDate() {
+        $file = "data/last_withdraw.txt";
+        if (file_exists($file)) {
+            return trim(file_get_contents($file));
+        }
+        return "";
+    }
+    
+    public static function setLastWithdrawDate() {
+        $file = "data/last_withdraw.txt";
+        $today = date('Y-m-d');
+        file_put_contents($file, $today);
+        return $today;
     }
 }
 
@@ -333,6 +348,7 @@ class Bot {
     private $uagent;
     private $captcha;
     private $cycle;
+    private $lastWithdrawDate;
     
     function __construct() {
         Display::Ban(TITLE, VERSION);
@@ -347,6 +363,7 @@ class Bot {
         
         $this->captcha = new Captcha();
         $this->cycle = 0;
+        $this->lastWithdrawDate = Functions::getLastWithdrawDate();
         
         Display::Ban(TITLE, VERSION);
         
@@ -359,6 +376,7 @@ class Bot {
         
         Display::Cetak("Username", $r['Username']);
         Display::Cetak("Balance", $r['Balance']);
+        Display::Cetak("Timezone", "America/Bogota (Colombia)");
         Display::Line();
 
         $status = 0;
@@ -366,9 +384,10 @@ class Bot {
             $this->cycle++;
             echo "\n" . k . "=== CYCLE " . $this->cycle . " === " . date('H:i:s') . " ===" . d . "\n";
             
-            // Check balance and auto withdraw
-            $this->checkBalanceAndWithdraw();
+            // Check balance and auto withdraw (SOLO 1 vez al día)
+            $this->checkDailyWithdraw();
             
+            // Continuar con el flujo normal del bot
             if($this->Claim()) {
                 Functions::removeConfig("cookie");
                 goto cookie;
@@ -378,16 +397,26 @@ class Bot {
         }
     }
     
-    private function checkBalanceAndWithdraw() {
+    private function checkDailyWithdraw() {
         $dashboard = $this->Dashboard();
         if (!$dashboard) {
             Display::waktu("ERROR: Cannot get dashboard");
-            return;
+            return false;
         }
         
         $balance = floatval($dashboard['Balance']);
+        $today = date('Y-m-d');
+        
         Display::Cetak("Balance", $dashboard['Balance'] . " RUB");
         Display::Cetak("Username", $dashboard['Username']);
+        Display::Cetak("Last Withdraw", $this->lastWithdrawDate ?: "Never");
+        
+        // Verificar si ya retiramos hoy
+        if ($this->lastWithdrawDate === $today) {
+            Display::waktu("Already withdrew today. Next withdraw: tomorrow");
+            Display::Line();
+            return false;
+        }
         
         // Check if we can withdraw (15 RUB minimum)
         if ($balance >= 15.0) {
@@ -396,20 +425,25 @@ class Bot {
             
             if ($result) {
                 Display::sukses("Withdraw completed! 15 RUB sent to Payeer");
+                $this->lastWithdrawDate = Functions::setLastWithdrawDate();
+                Display::Cetak("Next Withdraw", "Tomorrow (" . date('Y-m-d', strtotime('+1 day')) . ")");
                 
                 // Update balance after withdraw
                 $newDashboard = $this->Dashboard();
                 if ($newDashboard) {
                     Display::Cetak("New Balance", $newDashboard['Balance'] . " RUB");
                 }
+                return true;
             } else {
                 Display::Error("Withdraw failed");
+                return false;
             }
         } else {
             Display::waktu("Balance too low for withdraw (need 15 RUB, have $balance RUB)");
+            Display::Line();
         }
         
-        Display::Line();
+        return false;
     }
     
     private function processWithdraw($amount) {
@@ -665,4 +699,3 @@ if(!file_exists("data")) {
 
 // Iniciar el bot
 new Bot();
-?>
